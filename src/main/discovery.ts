@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
-import { parseClaudeHeader, parseClaudeSession, parseSubagentMeta, parseCodexSession, type SubagentFile } from '../core';
+import { parseClaudeHeader, parseClaudeSession, parseJsonl, parseSubagentMeta, parseCodexSession, resolveProject, type SubagentFile } from '../core';
 import type { DiscoverySource, Provider, RunDetail, RunSummary, Settings } from '../shared/types';
 import { isDirectory, isGitRoot, listDir, readHeadTail, readText, walkJsonl } from './files';
 
@@ -19,6 +19,26 @@ export interface DiscoveryResult {
   sources: DiscoverySource[];
 }
 
+export class RunIdentityError extends Error {
+  constructor() {
+    super('Run identity changed. List runs again to refresh the available IDs.');
+    this.name = 'RunIdentityError';
+  }
+}
+
+export interface DiscoveryOptions {
+  /** Optional project boundary for headless readers. Desktop discovery is unfiltered. */
+  acceptRun?: (run: RunSummary) => boolean;
+}
+
+/** Distinguish changed project metadata from a file that could not be read. */
+export class RunScopeError extends Error {
+  constructor() {
+    super('Run is no longer in the configured project');
+    this.name = 'RunScopeError';
+  }
+}
+
 function activeWindowMs(settings: Settings): number {
   return settings.activeWindowSeconds * 1000;
 }
@@ -29,7 +49,19 @@ async function listSubagentFiles(sessionDir: string): Promise<string[]> {
   return names.filter((n) => n.startsWith('agent-') && n.endsWith('.jsonl')).map((n) => join(dir, n));
 }
 
-export async function claudeHeader(filePath: string, settings: Settings, now = Date.now()): Promise<{ run: RunSummary; location: RunLocation } | undefined> {
+/** Latest explicit main-session identity; older inherited/sidechain records may differ. */
+function latestClaudeSessionId(text: string): string | undefined {
+  let end = text.length;
+  while (end > 0) {
+    const start = text.lastIndexOf('\n', end - 1) + 1;
+    const record = parseJsonl(text.slice(start, end))[0];
+    if (record && !record.isSidechain && typeof record.sessionId === 'string' && record.sessionId) return record.sessionId;
+    end = start - 1;
+  }
+  return undefined;
+}
+
+export async function claudeHeader(filePath: string, settings: Settings, now = Date.now(), options: DiscoveryOptions = {}): Promise<{ run: RunSummary; location: RunLocation } | undefined> {
   const sessionId = basename(filePath, '.jsonl');
   if (sessionId.startsWith('agent-')) return undefined;
   const sessionDir = filePath.slice(0, -'.jsonl'.length);
@@ -47,6 +79,20 @@ export async function claudeHeader(filePath: string, settings: Settings, now = D
       isGitRoot,
       homeDir: homedir(),
     });
+    const acceptRun = options.acceptRun;
+    if (acceptRun) {
+      if (!acceptRun(run)) return undefined;
+      const accepted = await mapLimit(subFiles, 16, async (path) => {
+        try {
+          const child = await readHeadTail(path);
+          const header = parseClaudeHeader({ sessionId: basename(path, '.jsonl'), filePath: path, headText: child.head, tailText: child.tail, mtimeMs: child.mtimeMs, subagentCount: 0, now, activeWindowMs: activeWindowMs(settings), isGitRoot, homeDir: homedir() });
+          return !header.cwd || acceptRun(header);
+        } catch {
+          return false;
+        }
+      });
+      run.agentCount = 1 + accepted.filter(Boolean).length;
+    }
     return { run, location: { id: sessionId, provider: 'claude', filePath, sessionDir } };
   } catch (error) {
     console.warn('[discovery] failed to read', filePath, error);
@@ -68,18 +114,20 @@ export async function codexHeader(filePath: string, settings: Settings, now = Da
 
 async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const results: R[] = new Array(items.length);
-  let index = 0;
+  const entries = items.entries();
   const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (index < items.length) {
-      const i = index++;
-      results[i] = await fn(items[i] as T);
+    for (;;) {
+      const next = entries.next();
+      if (next.done) return;
+      const [index, item] = next.value;
+      results[index] = await fn(item);
     }
   });
   await Promise.all(workers);
   return results;
 }
 
-export async function discoverAll(settings: Settings): Promise<DiscoveryResult> {
+export async function discoverAll(settings: Settings, options: DiscoveryOptions = {}): Promise<DiscoveryResult> {
   const now = Date.now();
   const runs: RunSummary[] = [];
   const locations = new Map<string, RunLocation>();
@@ -96,10 +144,10 @@ export async function discoverAll(settings: Settings): Promise<DiscoveryResult> 
       if (!(await isDirectory(dir))) continue;
       for (const name of await listDir(dir)) if (name.endsWith('.jsonl')) files.push(join(dir, name));
     }
-    const results = await mapLimit(files, 16, (f) => claudeHeader(f, settings, now));
+    const results = await mapLimit(files, 16, (f) => claudeHeader(f, settings, now, options));
     let count = 0;
     for (const result of results) {
-      if (!result) continue;
+      if (!result || (options.acceptRun && !options.acceptRun(result.run))) continue;
       runs.push(result.run);
       locations.set(result.location.id, result.location);
       count += 1;
@@ -116,7 +164,7 @@ export async function discoverAll(settings: Settings): Promise<DiscoveryResult> 
     const results = await mapLimit(files, 16, (f) => codexHeader(f, settings, now));
     let count = 0;
     for (const result of results) {
-      if (!result) continue;
+      if (!result || (options.acceptRun && !options.acceptRun(result.run))) continue;
       runs.push(result.run);
       locations.set(result.location.id, result.location);
       count += 1;
@@ -128,15 +176,30 @@ export async function discoverAll(settings: Settings): Promise<DiscoveryResult> 
 }
 
 /** Parse a run in full, including subagent transcripts. */
-export async function loadRunDetail(location: RunLocation, settings: Settings, now = Date.now()): Promise<RunDetail> {
+export async function loadRunDetail(location: RunLocation, settings: Settings, now = Date.now(), options: DiscoveryOptions = {}): Promise<RunDetail> {
   const window = activeWindowMs(settings);
   if (location.provider === 'codex') {
     const text = await readText(location.filePath);
     const { run, agents } = parseCodexSession({ filePath: location.filePath, text, now, activeWindowMs: window, isGitRoot, homeDir: homedir() });
+    if (run.id !== location.id) throw new RunIdentityError();
+    if (options.acceptRun && !options.acceptRun(run)) throw new RunScopeError();
     return { run, agents };
   }
   const sessionDir = location.sessionDir ?? location.filePath.slice(0, -'.jsonl'.length);
   const [mainText, subPaths] = await Promise.all([readText(location.filePath), listSubagentFiles(sessionDir)]);
+  const sessionId = latestClaudeSessionId(mainText);
+  if (sessionId !== undefined && sessionId !== location.id) throw new RunIdentityError();
+  let acceptSubagent: ((cwd: string | undefined) => boolean) | undefined;
+  const acceptRun = options.acceptRun;
+  if (acceptRun) {
+    const root = parseClaudeHeader({ sessionId: location.id, filePath: location.filePath, headText: mainText, tailText: '', mtimeMs: 0, subagentCount: 0, now, activeWindowMs: window, isGitRoot, homeDir: homedir() });
+    if (!acceptRun(root)) throw new RunScopeError();
+    acceptSubagent = (cwd) => {
+      if (!cwd) return true; // No explicit directory: inherit the root session.
+      const project = resolveProject(cwd, { isGitRoot, homeDir: homedir() });
+      return acceptRun({ ...root, cwd, projectName: project.name, projectPath: project.path });
+    };
+  }
   const subagentFiles: SubagentFile[] = await Promise.all(
     subPaths.map(async (path) => {
       const agentId = basename(path, '.jsonl').replace(/^agent-/, '');
@@ -145,5 +208,7 @@ export async function loadRunDetail(location: RunLocation, settings: Settings, n
       return { agentId, text, meta: parseSubagentMeta(metaText) };
     }),
   );
-  return parseClaudeSession({ sessionId: location.id, filePath: location.filePath, mainText, subagentFiles, now, activeWindowMs: window, isGitRoot, homeDir: homedir() });
+  const detail = parseClaudeSession({ sessionId: location.id, filePath: location.filePath, mainText, subagentFiles, now, activeWindowMs: window, isGitRoot, homeDir: homedir(), ...(acceptSubagent ? { acceptSubagent } : {}) });
+  if (acceptRun && !acceptRun(detail.run)) throw new RunScopeError();
+  return detail;
 }

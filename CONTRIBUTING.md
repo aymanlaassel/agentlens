@@ -18,14 +18,16 @@ npm run typecheck
 npm run lint
 npm test
 npm run build
+npm run test:cli
 ```
 
-CI runs the same four commands on macOS, Windows, and Linux. Keep TypeScript strict; do not add `any` or `@ts-ignore` to get past an error.
+CI runs these commands on macOS, Windows, and Linux. The CLI smoke test uses disposable synthetic sessions and needs no harness login. Keep TypeScript strict; do not add `any` or `@ts-ignore` to get past an error.
 
 ## Project layout
 
 - `src/core` is pure TypeScript with no Electron or Node dependency beyond types. Every parser and derivation lives here so it can be unit tested with fixtures. If you find yourself importing `electron` or `node:fs` in `src/core`, stop and inject the dependency instead (see `isGitRoot` in `resolveProject`).
 - `src/main` owns the filesystem: discovery, the chokidar watcher, settings persistence, and IPC handlers.
+- `src/cli` exposes bounded, read-only queries over the same parsers through JSON commands and stdio MCP. Keep stdout reserved for protocol messages in MCP mode; diagnostics belong on stderr.
 - `src/preload` exposes a small typed API on `window.agentlens`. Add a channel name to `src/shared/ipc.ts`, a handler in `src/main/ipc.ts`, and a method in `src/preload/index.ts`.
 - `src/renderer` is the React UI. State lives in a single zustand store (`store.ts`); derived lists are in `lib/selectors.ts`.
 
@@ -47,7 +49,7 @@ To add a new provider: create `src/core/<provider>/session.ts` returning a `RunD
 
 ## Privacy rule
 
-AgentLens must never make a network request or write transcript content anywhere. Pull requests that add telemetry, remote fetches, or cloud sync will not be merged.
+AgentLens must never make a network request or persist imported transcript content. Pull requests that add telemetry, remote fetches, or cloud sync will not be merged. Headless responses contain bounded metadata by default; text excerpts need explicit startup permission and a per-call opt-in in MCP mode. Explain that the connected harness can send returned data to its model provider.
 
 ## Commit messages
 

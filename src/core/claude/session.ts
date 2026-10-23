@@ -21,6 +21,8 @@ export interface ClaudeSessionInput {
   mtimeMs?: number;
   now: number;
   activeWindowMs: number;
+  /** Optional boundary for subagents; a missing working directory inherits the root. */
+  acceptSubagent?: (cwd: string | undefined) => boolean;
   isGitRoot?: (dir: string) => boolean;
   homeDir?: string;
 }
@@ -322,7 +324,11 @@ function statusFor(built: BuiltAgent, input: ClaudeSessionInput, spawn: SpawnInf
 /** Parse a complete Claude Code session (main transcript plus subagent transcripts) into a RunDetail. */
 export function parseClaudeSession(input: ClaudeSessionInput): RunDetail {
   const mainRecords = parseJsonl(input.mainText);
-  const groups = groupRecords(mainRecords, input.sessionId, input.subagentFiles ?? []);
+  const groups = groupRecords(mainRecords, input.sessionId, input.subagentFiles ?? []).filter((group) => {
+    if (group.role === 'main' || !input.acceptSubagent) return true;
+    const cwd = group.records.map((record) => record.cwd ?? record.attachment?.snapshot?.workingDirectory).find((dir) => typeof dir === 'string' && dir.length > 0);
+    return input.acceptSubagent(cwd);
+  });
 
   let cwd: string | undefined;
   let gitBranch: string | undefined;

@@ -2,7 +2,7 @@
 
 A local desktop dashboard that shows what your Claude Code and Codex agents are doing right now: which subagents the main agent spawned, what task each one was given, what it is working on this second, how long it has been running, and what it costs.
 
-Everything is read from the session logs already on your disk. Nothing leaves your machine.
+Session views come from the logs already on your disk. The optional CLI/MCP interface lets your own harness query those logs; see [Privacy](#privacy) for what can be shared.
 
 ![Topology view](docs/screenshots/topology.png)
 *Topology: the main agent and its subagents, each card showing the task, status, and current action.*
@@ -27,6 +27,8 @@ Agent harnesses write detailed JSONL transcripts, but they are hard to read and 
 | Timeline | Horizontal Gantt of agent lifetimes with spawn markers and a now line |
 | Chat | Talk to Claude about a project; a read-only Conductor answers questions itself and starts workflows when you ask for work to be done, then reports back |
 | Workflows | Run role-based agent workflows (Planner → Coder → Reviewer, or your own roles) as headless Claude Code sessions, each visible in the sidebar like any other run |
+| CLI / MCP | Read-only, project-scoped session queries for Claude Code, Codex, and other local stdio MCP clients; no Electron process needed |
+| Diagnostics | Bounded findings for recorded failures, repeated failed tools, quiet pending calls, and potentially overlapping edits; heuristics are labeled |
 | Settings | Session directories, light/dark/system theme, desktop notifications, idle window, editable per-model pricing, Claude Code CLI path, PR merge toggle |
 | Keyboard | `/` search, `j`/`k` move, `Enter` open, `Esc` close, `1`/`2` views, `n` new workflow, `c` new chat, `?` help |
 
@@ -65,6 +67,30 @@ npm run dist:linux    # AppImage + deb
 ```
 
 Output lands in `release/`. Builds are unsigned by default (`identity: null` in `electron-builder.yml`). To sign, set the usual `CSC_LINK` / `CSC_KEY_PASSWORD` environment variables and remove that line.
+
+## Use inside Claude Code or Codex
+
+Build the headless CLI from this checkout, then check discovery for the workspace you want to monitor:
+
+```sh
+npm ci --ignore-scripts
+npm run build:cli
+node dist-cli/index.cjs doctor --project /absolute/path/to/workspace
+node dist-cli/index.cjs list --project /absolute/path/to/workspace
+```
+
+`--ignore-scripts` skips the Electron download for headless use. Building still requires development dependencies; the resulting `dist-cli/index.cjs` runs with Node.js 22+ alone.
+
+Register the server in your harness, using absolute paths:
+
+```sh
+claude mcp add --transport stdio --scope local agentlens -- node /absolute/path/to/agentlens/dist-cli/index.cjs mcp --project /absolute/path/to/workspace
+codex mcp add agentlens -- node /absolute/path/to/agentlens/dist-cli/index.cjs mcp --project /absolute/path/to/workspace
+```
+
+The tools list recent runs, inspect recorded agents, diagnose failures, and explain missing session directories. They use the same local provider parsers as the desktop app. Scope defaults to the current directory; transcript excerpts require an explicit opt-in.
+
+See [Harness integration](docs/harness-integration.md) for project-local configuration, bounded outputs, suggested harness guidance, and limitations. MCP registration makes the tools available; it does not force the harness to call them. The [dependency note](docs/harness-integration.md#dependencies-and-build-footprint) explains the official SDK choice and build footprint.
 
 ## How session discovery works
 
@@ -199,11 +225,12 @@ It is a JSON array of role definitions. A role with the same `id` as a built-in 
 
 ## Privacy
 
-AgentLens is local-only software.
+The session reader runs locally and leaves imported session logs unchanged.
 
-- It reads files under the two configured directories and nothing else.
-- It makes no network requests. There is no telemetry, crash reporting, or update check. Workflows spawn your local Claude Code CLI, which talks to the Claude API on its own; AgentLens never does.
-- Prompts, tool results, and file paths are shown in the UI and are never written anywhere except the app's own `settings.json` (which holds only your preferences).
+- Discovery reads the configured session directories and resolves working directories against local repository roots.
+- AgentLens makes no network requests and has no telemetry, crash reporting, or update check. Desktop chat and workflows spawn your own Claude Code CLI, which communicates through your account. Optional MCP responses go to the connected harness, which may send them to its model provider.
+- CLI/MCP responses omit prompt-derived titles, commands, and tool results by default. Metadata still includes paths, identifiers, timing, and usage. Bounded text excerpts require `--include-text`; MCP calls also require `includeText: true`.
+- Preferences, desktop chats, and workflow state are saved in the app's local user-data directory. Headless queries do not persist their results.
 
 If you share screenshots or bug reports, scrub them first: transcripts frequently contain secrets.
 
@@ -214,13 +241,15 @@ npm run dev         # Vite + Electron with live reload
 npm run typecheck   # tsc for renderer and main
 npm run lint        # eslint
 npm test            # vitest, fixtures in tests/fixtures
-npm run build       # production renderer + main bundles
+npm run test:cli     # compiled CLI + real stdio MCP, synthetic sessions only
+npm run build       # production renderer + main + CLI bundles
 ```
 
 Layout:
 
 ```
 src/core       pure parsers and derivations (no Electron), fully unit tested
+src/cli        read-only JSON commands and local stdio MCP tools
 src/main       Electron main: discovery, watcher, IPC, settings
 src/preload    typed context bridge
 src/renderer   React UI

@@ -1,25 +1,10 @@
 import { app } from 'electron';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { DEFAULT_PRICING } from '../core/pricing';
 import type { Settings } from '../shared/types';
+import { defaultSettings } from './default-settings';
 
-export function defaultSettings(): Settings {
-  const home = homedir();
-  const claudeDir = process.env.CLAUDE_CONFIG_DIR ? join(process.env.CLAUDE_CONFIG_DIR, 'projects') : join(home, '.claude', 'projects');
-  const codexDir = process.env.CODEX_HOME ? join(process.env.CODEX_HOME, 'sessions') : join(home, '.codex', 'sessions');
-  return {
-    claudeSessionsDir: claudeDir,
-    codexSessionsDir: codexDir,
-    theme: 'system',
-    notifications: false,
-    activeWindowSeconds: 45,
-    pricing: { ...DEFAULT_PRICING },
-    claudeBinary: '',
-    allowPrMerge: false,
-  };
-}
+export { defaultSettings } from './default-settings';
 
 function settingsPath(): string {
   return join(app.getPath('userData'), 'settings.json');
