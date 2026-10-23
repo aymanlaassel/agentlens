@@ -74,6 +74,11 @@ describe('buildConductorPrompt', () => {
     expect(prompt).toContain('```agentlens\n{"action":"run-workflow"');
     expect(prompt).toContain('never edit files');
   });
+
+  it('tells the conductor when to use the PR templates', () => {
+    expect(prompt).toContain('Use the pr-review-merge template only when the user explicitly asked to merge; otherwise use pr-review.');
+    expect(prompt).toContain('state in the goal whether merging is authorized');
+  });
 });
 
 describe('extractDirectives', () => {

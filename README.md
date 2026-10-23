@@ -27,7 +27,7 @@ Agent harnesses write detailed JSONL transcripts, but they are hard to read and 
 | Timeline | Horizontal Gantt of agent lifetimes with spawn markers and a now line |
 | Chat | Talk to Claude about a project; a read-only Conductor answers questions itself and starts workflows when you ask for work to be done, then reports back |
 | Workflows | Run role-based agent workflows (Planner → Coder → Reviewer, or your own roles) as headless Claude Code sessions, each visible in the sidebar like any other run |
-| Settings | Session directories, light/dark/system theme, desktop notifications, idle window, editable per-model pricing, Claude Code CLI path |
+| Settings | Session directories, light/dark/system theme, desktop notifications, idle window, editable per-model pricing, Claude Code CLI path, PR merge toggle |
 | Keyboard | `/` search, `j`/`k` move, `Enter` open, `Esc` close, `1`/`2` views, `n` new workflow, `c` new chat, `?` help |
 
 ![Side panel](docs/screenshots/side-panel.png)
@@ -127,6 +127,8 @@ AgentLens can also run agents, not just watch them. A workflow is an ordered lis
 | Plan and build | Planner → Coder |
 | Build | Coder |
 | Operate | Operator |
+| Review pull request | PR analyst |
+| Review and merge pull request | PR analyst → PR merger |
 
 You can also pick any custom sequence of roles instead of a template.
 
@@ -140,6 +142,10 @@ Each step is started with a pre-assigned `--session-id`, so it appears in the si
 | Coder | edit | Implements the plan it is given and runs the tests. |
 | Reviewer | read-only | Reviews the changes for bugs and reports findings. |
 | Operator | full | Carries out tasks on the computer with full shell access. |
+| PR analyst | read-only + gh | Inspects a pull request with the GitHub CLI and reports a verdict. |
+| PR merger | read-only + gh | Merges a pull request only when the goal authorizes it, the analyst approved, and checks pass. Requires the setting below. |
+
+The two PR roles run `gh pr view`, `gh pr diff`, `gh pr checks`, and (merger only) `gh pr merge` through the spawned Claude Code session. They need the GitHub CLI installed and authenticated (`gh auth status`). The other roles stay offline.
 
 ### Permission levels
 
@@ -154,6 +160,8 @@ Each level maps directly to Claude Code CLI flags. `WebFetch` and `WebSearch` ar
 **Warning:** a `full` role runs any shell command without asking. Use it only for roles you trust with your machine, and only in directories you can afford to lose.
 
 A role's `extraTools` are appended to the allowed list at any level, so an `edit` role can be granted `Bash(npm run build:*)` without going `full`.
+
+A `read-only` role whose `extraTools` includes `Bash(...)` patterns drops the bare `Bash` entry from the disallowed list; `--permission-mode dontAsk` still limits it to exactly the listed command patterns.
 
 ### Custom roles
 
@@ -186,6 +194,7 @@ It is a JSON array of role definitions. A role with the same `id` as a built-in 
 
 - Workflow state is saved as one JSON file per run in `<userData>/workflows/`, so finished workflows survive restarts. A workflow that was still running when AgentLens was closed cannot be resumed and is marked errored on the next launch.
 - Settings → Workflows → **Claude Code CLI path** sets the binary to run. Leave it blank to auto-detect `claude` from `PATH`, `~/.local/bin`, `/opt/homebrew/bin`, or `/usr/local/bin`.
+- Settings → Workflows → **Allow agents to merge pull requests** gates the PR merger role. It is off by default; starting a workflow that includes a role allowed to run `gh pr merge` fails with an error until it is enabled.
 - Workflows reach the Claude API through your own Claude Code install and account. AgentLens itself still makes no network requests.
 
 ## Privacy

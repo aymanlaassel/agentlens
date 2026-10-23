@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_ROLES, buildStepPrompt, mergeRoles, permissionArgs, stepArgs, validateRole } from '../src/core';
+import { DEFAULT_ROLES, DEFAULT_TEMPLATES, buildStepPrompt, mergeRoles, permissionArgs, roleCanMerge, stepArgs, validateRole } from '../src/core';
 import type { RoleDefinition } from '../src/shared/types';
 
 const valid: RoleDefinition = {
@@ -50,21 +50,21 @@ describe('mergeRoles', () => {
   it('returns the built-in roles when nothing is customised', () => {
     const { roles, problems } = mergeRoles(undefined);
     expect(roles).toEqual(DEFAULT_ROLES);
-    expect(roles).toHaveLength(4);
+    expect(roles).toHaveLength(DEFAULT_ROLES.length);
     expect(problems).toEqual([]);
   });
 
   it('appends a custom role with a new id', () => {
     const { roles, problems } = mergeRoles([valid]);
     expect(problems).toEqual([]);
-    expect(roles).toHaveLength(5);
+    expect(roles).toHaveLength(DEFAULT_ROLES.length + 1);
     const added = roles.find((r) => r.id === 'tester');
     expect(added).toMatchObject({ ...valid, builtIn: false });
   });
 
   it('overrides a built-in role with the same id', () => {
     const { roles } = mergeRoles([{ ...valid, id: 'coder', name: 'My Coder' }]);
-    expect(roles).toHaveLength(4);
+    expect(roles).toHaveLength(DEFAULT_ROLES.length);
     const coder = roles.find((r) => r.id === 'coder');
     expect(coder?.name).toBe('My Coder');
     expect(coder?.builtIn).toBe(false);
@@ -72,7 +72,7 @@ describe('mergeRoles', () => {
 
   it('drops invalid entries and reports them by index', () => {
     const { roles, problems } = mergeRoles([valid, { id: 'BAD' }, 'nope']);
-    expect(roles).toHaveLength(5);
+    expect(roles).toHaveLength(DEFAULT_ROLES.length + 1);
     expect(problems).toHaveLength(2);
     expect(problems[0]).toMatch(/^roles\[1\]:/);
     expect(problems[1]).toMatch(/^roles\[2\]:/);
@@ -107,6 +107,59 @@ describe('permissionArgs', () => {
     const args = permissionArgs({ permission: 'read-only', extraTools: ['Bash(ls:*)'] });
     const allowed = args.slice(args.indexOf('--allowedTools') + 1, args.indexOf('--disallowedTools'));
     expect(allowed).toContain('Bash(ls:*)');
+  });
+
+  it('read-only without Bash extras still disallows Bash', () => {
+    const args = permissionArgs({ permission: 'read-only', extraTools: ['WebFetch(domain:example.com)'] });
+    const disallowed = args.slice(args.indexOf('--disallowedTools') + 1);
+    expect(disallowed).toContain('Bash');
+  });
+
+  it('read-only with Bash extras omits bare Bash but keeps edits disallowed', () => {
+    const args = permissionArgs({ permission: 'read-only', extraTools: ['Bash(gh pr view:*)'] });
+    expect(args.slice(0, 2)).toEqual(['--permission-mode', 'dontAsk']);
+    const allowed = args.slice(args.indexOf('--allowedTools') + 1, args.indexOf('--disallowedTools'));
+    expect(allowed).toContain('Bash(gh pr view:*)');
+    const disallowed = args.slice(args.indexOf('--disallowedTools') + 1);
+    expect(disallowed).not.toContain('Bash');
+    expect(disallowed).toEqual(['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'WebFetch', 'WebSearch']);
+  });
+});
+
+describe('built-in PR roles and templates', () => {
+  it('ships pr-analyst and pr-merger as read-only roles with gh tools', () => {
+    const analyst = DEFAULT_ROLES.find((r) => r.id === 'pr-analyst');
+    const merger = DEFAULT_ROLES.find((r) => r.id === 'pr-merger');
+    expect(analyst).toMatchObject({ permission: 'read-only', maxTurns: 40, builtIn: true });
+    expect(analyst?.extraTools).toEqual(['Bash(gh pr view:*)', 'Bash(gh pr diff:*)', 'Bash(gh pr checks:*)', 'Bash(gh pr status:*)', 'Bash(git log:*)', 'Bash(git diff:*)', 'Bash(git show:*)']);
+    expect(analyst?.systemPrompt).toContain('Verdict');
+    expect(merger).toMatchObject({ permission: 'read-only', maxTurns: 15, builtIn: true });
+    expect(merger?.extraTools).toEqual(['Bash(gh pr view:*)', 'Bash(gh pr checks:*)', 'Bash(gh pr merge:*)']);
+    expect(merger?.systemPrompt).toContain('Merge result');
+  });
+
+  it('ships pr-review and pr-review-merge templates that reference existing roles', () => {
+    expect(DEFAULT_TEMPLATES.find((t) => t.id === 'pr-review')).toMatchObject({ roleIds: ['pr-analyst'], builtIn: true });
+    expect(DEFAULT_TEMPLATES.find((t) => t.id === 'pr-review-merge')).toMatchObject({ roleIds: ['pr-analyst', 'pr-merger'], builtIn: true });
+    const ids = new Set(DEFAULT_ROLES.map((r) => r.id));
+    for (const t of DEFAULT_TEMPLATES) for (const id of t.roleIds) expect(ids.has(id)).toBe(true);
+  });
+
+  it('keeps the original four roles unchanged', () => {
+    expect(DEFAULT_ROLES.slice(0, 4).map((r) => r.id)).toEqual(['planner', 'coder', 'reviewer', 'operator']);
+    expect(DEFAULT_ROLES.slice(0, 4).every((r) => r.extraTools === undefined)).toBe(true);
+  });
+});
+
+describe('roleCanMerge', () => {
+  it('is true only for roles that may run gh pr merge', () => {
+    expect(roleCanMerge({ extraTools: ['Bash(gh pr merge:*)'] })).toBe(true);
+    expect(roleCanMerge({ extraTools: ['Bash(gh pr view:*)', 'Bash(gh pr merge --squash:*)'] })).toBe(true);
+    expect(roleCanMerge({ extraTools: ['Bash(gh pr view:*)'] })).toBe(false);
+    expect(roleCanMerge({ extraTools: [] })).toBe(false);
+    expect(roleCanMerge({})).toBe(false);
+    expect(roleCanMerge(DEFAULT_ROLES.find((r) => r.id === 'pr-merger') as RoleDefinition)).toBe(true);
+    expect(roleCanMerge(DEFAULT_ROLES.find((r) => r.id === 'pr-analyst') as RoleDefinition)).toBe(false);
   });
 });
 

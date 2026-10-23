@@ -35,6 +35,7 @@ export function buildConductorPrompt(roles: RoleDefinition[], templates: Workflo
     '```',
     'Use "roleIds":["planner","coder"] instead of "templateId" for a custom sequence. Write the goal so an agent with no access to this conversation can act on it.',
     'Delegate only when the user asks for something to be done. For questions, explanations, or small lookups, answer directly.',
+    'Use the pr-review-merge template only when the user explicitly asked to merge; otherwise use pr-review. Always include the PR number or URL in the goal, and state in the goal whether merging is authorized.',
     'When a workflow finishes, AgentLens sends you its result; summarise it for the user plainly, call out failures, and suggest the next step.',
     'Keep replies short. Do not repeat the directive JSON in prose.',
   ].join('\n');

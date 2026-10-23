@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
-import { DEFAULT_TEMPLATES, applyEvent, createWorkflow, markInterrupted, mergeRoles, nextPendingStep, stepArgs, workflowName, type WorkflowEvent } from '../core';
+import { DEFAULT_TEMPLATES, applyEvent, createWorkflow, markInterrupted, mergeRoles, nextPendingStep, roleCanMerge, stepArgs, workflowName, type WorkflowEvent } from '../core';
 import { killClaude, runClaude } from './claude-process';
 import type { OrchestratorConfig, RoleDefinition, Settings, WorkflowRun, WorkflowStartRequest, WorkflowTemplate } from '../shared/types';
 
@@ -95,6 +95,9 @@ export class Orchestrator extends EventEmitter<OrchestratorEvents> {
       if (!role) throw new Error(`Unknown role "${id}"`);
       return role;
     });
+    if (!this.settings.allowPrMerge && roles.some(roleCanMerge)) {
+      throw new Error('Merging pull requests is disabled. Enable "Allow agents to merge pull requests" in Settings.');
+    }
 
     const workflow = createWorkflow({
       id: randomUUID(),

@@ -17,6 +17,7 @@ export function defaultSettings(): Settings {
     activeWindowSeconds: 45,
     pricing: { ...DEFAULT_PRICING },
     claudeBinary: '',
+    allowPrMerge: false,
   };
 }
 
@@ -39,6 +40,7 @@ export function sanitizeSettings(raw: unknown): Settings {
   if (typeof raw.notifications === 'boolean') out.notifications = raw.notifications;
   if (typeof raw.activeWindowSeconds === 'number' && raw.activeWindowSeconds >= 5 && raw.activeWindowSeconds <= 3600) out.activeWindowSeconds = raw.activeWindowSeconds;
   if (typeof raw.claudeBinary === 'string') out.claudeBinary = raw.claudeBinary.trim();
+  if (typeof raw.allowPrMerge === 'boolean') out.allowPrMerge = raw.allowPrMerge;
   if (isObject(raw.pricing)) {
     for (const [model, value] of Object.entries(raw.pricing)) {
       if (!isObject(value)) continue;

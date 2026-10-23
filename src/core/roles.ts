@@ -1,6 +1,10 @@
 import type { RoleDefinition, RolePermission, WorkflowTemplate } from '../shared/types';
 
-/** Tools a role may use at each permission level. Nothing here reaches the network. */
+/**
+ * Tools a role may use at each permission level. The base presets stay offline;
+ * only the pr-analyst and pr-merger roles call the GitHub CLI (gh), which
+ * requires the user to have gh installed and authenticated.
+ */
 const READ_TOOLS = ['Read', 'Grep', 'Glob', 'LS', 'TodoWrite'];
 const EDIT_TOOLS = [...READ_TOOLS, 'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash(git status:*)', 'Bash(git diff:*)', 'Bash(git log:*)', 'Bash(npm test:*)', 'Bash(npm run:*)', 'Bash(npx vitest:*)', 'Bash(npx tsc:*)'];
 
@@ -11,7 +15,7 @@ export const PERMISSION_LABEL: Record<RolePermission, string> = {
 };
 
 export const PERMISSION_HELP: Record<RolePermission, string> = {
-  'read-only': 'Can read and search files. Cannot change anything or run commands.',
+  'read-only': 'Can read and search files. Cannot change anything, and runs only the commands listed in extraTools.',
   edit: 'Can edit files and run tests or git read commands inside the working directory.',
   full: 'Can run any shell command without asking. Use only for roles you trust with your machine.',
 };
@@ -61,6 +65,37 @@ export const DEFAULT_ROLES: RoleDefinition[] = [
     maxTurns: 60,
     builtIn: true,
   },
+  {
+    id: 'pr-analyst',
+    name: 'PR analyst',
+    description: 'Inspects a pull request with the GitHub CLI and reports a verdict.',
+    systemPrompt:
+      'You are the PR analyst in a team of agents. The goal names a pull request by number, URL, or branch. ' +
+      'Run `gh pr view`, `gh pr diff`, and `gh pr checks` on it to inspect the title, description, diff, CI status, and review state. ' +
+      'Read the touched files in the working directory for context. Look for correctness bugs, missing tests, risky changes, and anything that contradicts the PR description. ' +
+      'Never modify files. Finish with a section titled "Verdict" containing exactly APPROVE or REQUEST CHANGES on its own line, then "PR: <number>" on its own line, ' +
+      'then a numbered list of findings with file and line references.',
+    permission: 'read-only',
+    extraTools: ['Bash(gh pr view:*)', 'Bash(gh pr diff:*)', 'Bash(gh pr checks:*)', 'Bash(gh pr status:*)', 'Bash(git log:*)', 'Bash(git diff:*)', 'Bash(git show:*)'],
+    maxTurns: 40,
+    builtIn: true,
+  },
+  {
+    id: 'pr-merger',
+    name: 'PR merger',
+    description: 'Merges a pull request only when the goal authorizes it and the analyst approved.',
+    systemPrompt:
+      "You are the PR merger in a team of agents. You receive the PR analyst's output from the previous step. " +
+      'Merge ONLY IF ALL of these hold: (a) the goal text explicitly authorizes merging with a clear instruction such as "merge if approved" or "you may merge"; ' +
+      "(b) the previous step's Verdict is APPROVE; (c) `gh pr checks` shows no failing or pending required checks. " +
+      'Use `gh pr merge <number> --squash --delete-branch` unless the goal names a different merge method. ' +
+      'If any condition fails, do not merge and explain which condition blocked it. ' +
+      'Finish with a section titled "Merge result" saying MERGED or NOT MERGED and why.',
+    permission: 'read-only',
+    extraTools: ['Bash(gh pr view:*)', 'Bash(gh pr checks:*)', 'Bash(gh pr merge:*)'],
+    maxTurns: 15,
+    builtIn: true,
+  },
 ];
 
 export const DEFAULT_TEMPLATES: WorkflowTemplate[] = [
@@ -68,6 +103,8 @@ export const DEFAULT_TEMPLATES: WorkflowTemplate[] = [
   { id: 'plan-build', name: 'Plan and build', description: 'Planner then Coder.', roleIds: ['planner', 'coder'], builtIn: true },
   { id: 'build', name: 'Build', description: 'Coder alone.', roleIds: ['coder'], builtIn: true },
   { id: 'operate', name: 'Operate', description: 'Operator carries out a task with full access.', roleIds: ['operator'], builtIn: true },
+  { id: 'pr-review', name: 'Review pull request', description: 'PR analyst inspects a pull request and reports a verdict.', roleIds: ['pr-analyst'], builtIn: true },
+  { id: 'pr-review-merge', name: 'Review and merge pull request', description: 'PR analyst reviews, then PR merger merges only if the goal authorizes it and the verdict is APPROVE.', roleIds: ['pr-analyst', 'pr-merger'], builtIn: true },
 ];
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,39}$/;
@@ -108,13 +145,21 @@ export function mergeRoles(custom: unknown): { roles: RoleDefinition[]; problems
 export function permissionArgs(role: Pick<RoleDefinition, 'permission' | 'extraTools'>): string[] {
   const extra = role.extraTools ?? [];
   switch (role.permission) {
-    case 'read-only':
-      return ['--permission-mode', 'dontAsk', '--allowedTools', ...READ_TOOLS, ...extra, '--disallowedTools', 'Bash', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'WebFetch', 'WebSearch'];
+    case 'read-only': {
+      // Specific Bash(...) extras are enforced by the allowed list under dontAsk; bare Bash would block them all.
+      const hasBashExtras = extra.some((t) => t.startsWith('Bash('));
+      return ['--permission-mode', 'dontAsk', '--allowedTools', ...READ_TOOLS, ...extra, '--disallowedTools', ...(hasBashExtras ? [] : ['Bash']), 'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'WebFetch', 'WebSearch'];
+    }
     case 'edit':
       return ['--permission-mode', 'acceptEdits', '--allowedTools', ...EDIT_TOOLS, ...extra, '--disallowedTools', 'WebFetch', 'WebSearch'];
     case 'full':
       return ['--permission-mode', 'bypassPermissions', ...(extra.length ? ['--allowedTools', ...extra] : [])];
   }
+}
+
+/** True when the role is allowed to run `gh pr merge`, which the allowPrMerge setting gates. */
+export function roleCanMerge(role: Pick<RoleDefinition, 'extraTools'>): boolean {
+  return (role.extraTools ?? []).some((t) => /^Bash\(gh pr merge/.test(t));
 }
 
 /** Full argument list for one headless Claude Code step. */

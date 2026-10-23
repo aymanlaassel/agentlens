@@ -160,6 +160,8 @@ export interface Settings {
   pricing: Record<string, ModelPricing>;
   /** Path to the Claude Code CLI used to run workflows. Empty means auto-detect. */
   claudeBinary: string;
+  /** Lets the PR merger role run gh pr merge. Off by default. */
+  allowPrMerge: boolean;
 }
 
 export interface AgentStatusChange {

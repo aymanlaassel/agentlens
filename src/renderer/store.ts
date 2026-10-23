@@ -79,6 +79,7 @@ export const DEFAULT_SETTINGS: Settings = {
   activeWindowSeconds: 45,
   pricing: { ...DEFAULT_PRICING },
   claudeBinary: '',
+  allowPrMerge: false,
 };
 
 export const useStore = create<UiState & UiActions>((set) => ({

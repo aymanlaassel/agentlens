@@ -139,6 +139,11 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
             <span>Claude Code CLI path (blank = auto-detect)</span>
             <input type="text" value={draft.claudeBinary} onChange={(e) => setDraft((d) => ({ ...d, claudeBinary: e.target.value }))} placeholder="e.g. ~/.local/bin/claude" spellCheck={false} />
           </label>
+          <label className="field checkbox">
+            <input type="checkbox" checked={draft.allowPrMerge} onChange={(e) => setDraft((d) => ({ ...d, allowPrMerge: e.target.checked }))} />
+            <span>Allow agents to merge pull requests</span>
+          </label>
+          <p className="muted small">Lets the PR merger role run gh pr merge. Off by default.</p>
         </fieldset>
 
         <fieldset>
